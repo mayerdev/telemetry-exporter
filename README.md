@@ -38,10 +38,10 @@ Configuration is done via the `config.yml` file in the project root:
 
 ```yaml
 nats_url: 'nats://localhost:4222'    # NATS server address
-exporter_id: 'node-01'              # Unique ID for this exporter
-storage_file: 'stats.json'          # File to save accumulated statistics
-collection_interval_ms: 1000        # Data collection interval in ms
-init_from_system: false             # Whether to start counting from current system values
+exporter_id: 'node-01'               # Unique ID for this exporter
+storage_file: 'stats.json'           # File to save accumulated statistics
+collection_interval_ms: 1000         # Data collection interval in ms
+init_from_system: false              # Whether to start counting from current system values
 ```
 
 ## Usage
