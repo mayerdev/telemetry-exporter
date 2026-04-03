@@ -60,7 +60,7 @@ Returns a JSON object containing all monitored network interfaces.
 - **Subject:** `telemetry.<id>.stats.network`
 - **Request Example:**
   ```bash
-  nats request telemetry.local-node-01.stats.network ""
+  nats request telemetry.local-node-01.stats.network ''
   ```
 - **Response Example:**
   ```json
@@ -84,7 +84,7 @@ Returns statistics for a specific network interface.
 - **Subject:** `telemetry.<id>.stats.network.<interface>`
 - **Request Example:**
   ```bash
-  nats request telemetry.local-node-01.stats.network.eth0 ""
+  nats request telemetry.local-node-01.stats.network.eth0 ''
   ```
 - **Response Example:**
   ```json
@@ -101,7 +101,7 @@ Resets the `rx`, `tx`, and `total` counters for the specified interface to zero.
 - **Subject:** `telemetry.<id>.stats.network.<interface>.reset`
 - **Request Example:**
   ```bash
-  nats request telemetry.local-node-01.stats.network.eth0.reset ""
+  nats request telemetry.local-node-01.stats.network.eth0.reset ''
   ```
 - **Response Example:**
   ```json
