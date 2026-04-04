@@ -10,6 +10,7 @@ import (
 
 	"telemetry-exporter/internal/collector"
 	"telemetry-exporter/internal/config"
+	"telemetry-exporter/internal/hooks"
 	"telemetry-exporter/internal/stats"
 	"telemetry-exporter/internal/storage"
 
@@ -20,6 +21,8 @@ import (
 type Exporter struct {
 	config config.Config
 	nc     *nats.Conn
+	js     nats.JetStreamContext
+	hooks  *hooks.Manager
 	mu     sync.RWMutex
 	stats  stats.GlobalStats
 }
@@ -64,6 +67,25 @@ func (e *Exporter) Run(ctx context.Context) error {
 	e.nc = nc
 	defer e.nc.Close()
 
+	js, jsErr := nc.JetStream()
+	if jsErr != nil {
+		log.Warn().Err(jsErr).Msg("JetStream unavailable, nats hooks will not work")
+	} else {
+		e.js = js
+	}
+
+	hooksFile := e.config.HooksFile
+	if hooksFile == "" {
+		hooksFile = "hooks.json"
+	}
+
+	hm, err := hooks.NewManager(hooksFile, e.js)
+	if err != nil {
+		return fmt.Errorf("hooks init: %w", err)
+	}
+
+	e.hooks = hm
+
 	queue := "exporter-group"
 	id := e.config.ExporterID
 
@@ -83,6 +105,18 @@ func (e *Exporter) Run(ctx context.Context) error {
 			subject: fmt.Sprintf("telemetry.%s.stats.network.*.reset", id),
 			handler: e.handleReset,
 		},
+		{
+			subject: fmt.Sprintf("telemetry.%s.hooks.add", id),
+			handler: e.handleHookAdd,
+		},
+		{
+			subject: fmt.Sprintf("telemetry.%s.hooks.remove", id),
+			handler: e.handleHookRemove,
+		},
+		{
+			subject: fmt.Sprintf("telemetry.%s.hooks.list", id),
+			handler: e.handleHookList,
+		},
 	}
 
 	for _, s := range subjects {
@@ -100,6 +134,14 @@ func (e *Exporter) Run(ctx context.Context) error {
 			e.collect()
 			if err := e.saveStats(); err != nil {
 				log.Error().Err(err).Msg("Failed to save stats")
+			}
+
+			e.mu.RLock()
+			ifaces := e.stats.Interfaces
+			e.mu.RUnlock()
+
+			if err := e.hooks.CheckAll(ctx, e.config.ExporterID, ifaces); err != nil {
+				log.Error().Err(err).Msg("Hook check failed")
 			}
 		case <-ctx.Done():
 			return nil
@@ -171,4 +213,54 @@ func (e *Exporter) handleReset(m *nats.Msg) {
 	}
 
 	m.Respond([]byte(`{"status":"ok"}`))
+}
+
+func (e *Exporter) handleHookAdd(m *nats.Msg) {
+	var hook hooks.Hook
+	if err := json.Unmarshal(m.Data, &hook); err != nil {
+		respondError(m, "invalid payload: "+err.Error())
+		return
+	}
+
+	if hook.ID == "" {
+		respondError(m, "id is required")
+		return
+	}
+
+	if err := e.hooks.Add(&hook); err != nil {
+		respondError(m, err.Error())
+		return
+	}
+
+	data, _ := json.Marshal(map[string]string{"id": hook.ID})
+	m.Respond(data)
+}
+
+func (e *Exporter) handleHookRemove(m *nats.Msg) {
+	var req struct {
+		ID string `json:"id"`
+	}
+
+	if err := json.Unmarshal(m.Data, &req); err != nil {
+		respondError(m, "invalid payload: "+err.Error())
+		return
+	}
+
+	if err := e.hooks.Remove(req.ID); err != nil {
+		respondError(m, err.Error())
+		return
+	}
+
+	m.Respond([]byte(`{"status":"ok"}`))
+}
+
+func (e *Exporter) handleHookList(m *nats.Msg) {
+	list := e.hooks.List()
+	data, _ := json.Marshal(list)
+	m.Respond(data)
+}
+
+func respondError(m *nats.Msg, msg string) {
+	data, _ := json.Marshal(map[string]string{"error": msg})
+	m.Respond(data)
 }

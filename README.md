@@ -5,9 +5,10 @@ A telemetry exporter designed for hosting providers to monitor resource usage. C
 ## Features
 
 - Real-time network statistics collection (RX/TX/Total bytes).
-- Robust counter handling (survives interface recreation and OS counter resets).
+- Robust counters handling (survives interface recreation and OS counters' resets).
 - State persistence between restarts.
 - NATS-based API for remote monitoring and management.
+- Traffic threshold hooks: fire a JetStream event or run a local command when traffic exceeds a limit.
 - Low overhead and easy deployment.
 
 ## Requirements
@@ -20,7 +21,7 @@ A telemetry exporter designed for hosting providers to monitor resource usage. C
 
 Building the project requires Go 1.26+.
 
-### Build for current OS:
+### Build for the current OS:
 ```bash
 go build -o telemetry-exporter ./cmd/exporter/main.go
 ```
@@ -40,6 +41,7 @@ Configuration is done via the `config.yml` file in the project root:
 nats_url: 'nats://localhost:4222'    # NATS server address
 exporter_id: 'node-01'               # Unique ID for this exporter
 storage_file: 'stats.json'           # File to save accumulated statistics
+hooks_file: 'hooks.json'             # File to persist hooks and their state (default: hooks.json)
 collection_interval_ms: 1000         # Data collection interval in ms
 init_from_system: false              # Whether to start counting from current system values
 ```
@@ -110,8 +112,100 @@ Resets the `rx`, `tx`, and `total` counters for the specified interface to zero.
   }
   ```
 
-## TODO
+## Hooks
 
-- **Traffic Volume Hooks:** Automatically send a message to a NATS JetStream topic when an interface's traffic exceeds a defined threshold.
-- **Action Hooks:** Trigger execution of a local command when traffic reaches a certain limit.
-- **Hook Persistence:** Support for both one-time (single trigger) and persistent hooks.
+Hooks fire when accumulated traffic on an interface crosses a threshold. They are managed dynamically via NATS and persist across restarts.
+
+### Hook fields
+
+| Field           | Required  | Description                                                                                                                           |
+|-----------------|-----------|---------------------------------------------------------------------------------------------------------------------------------------|
+| `id`            | Yes       | Unique hook identifier (chosen by the client)                                                                                         |
+| `interface`     | No        | Network interface to watch (empty = all interfaces)                                                                                   |
+| `trigger`       | Yes       | `rx`, `tx`, or `total`                                                                                                                |
+| `trigger_level` | Yes       | Threshold in bytes                                                                                                                    |
+| `kind`          | Yes       | `nats` - publish a JetStream event; `command` - run a shell command                                                                   |
+| `nats_subject`  | `nats`    | JetStream subject to publish to (default: `telemetry.hooks.threshold`)                                                                |
+| `command`       | `command` | Shell command to execute (`/bin/sh -c`)                                                                                               |
+| `once`          | No        | `true` - fire once and remove the hook; `false` - re-fire each time the threshold is crossed after a counter reset (default: `false`) |
+
+### Add a hook
+
+- **Subject:** `telemetry.<id>.hooks.add`
+- **Request Example - JetStream event when eth0 total exceeds 100 GiB (once):**
+  ```bash
+  nats request telemetry.node-01.hooks.add '{
+    "id": "eth0-100g",
+    "interface": "eth0",
+    "trigger": "total",
+    "trigger_level": 107374182400,
+    "kind": "nats",
+    "nats_subject": "telemetry.hooks.threshold",
+    "once": true
+  }'
+  ```
+- **Request Example - run a script when any interface RX exceeds 10 GiB (repeating):**
+  ```bash
+  nats request telemetry.node-01.hooks.add '{
+    "id": "any-rx-10g",
+    "trigger": "rx",
+    "trigger_level": 10737418240,
+    "kind": "command",
+    "command": "/usr/local/bin/notify.sh",
+    "once": false
+  }'
+  ```
+- **Response:**
+  ```json
+  { "id": "eth0-100g" }
+  ```
+
+The command receives context via environment variables: `EXPORTER_ID`, `IFACE`, `TRIGGER`, `VALUE`, `THRESHOLD`.
+
+For `kind: nats`, the published JetStream message will look like this:
+```json
+{
+  "exporter_id": "node-01",
+  "hook_id": "eth0-100g",
+  "iface": "eth0",
+  "trigger": "total",
+  "value": 107374182401,
+  "threshold": 107374182400,
+  "ts": 1743800000
+}
+```
+
+### Remove a hook
+
+- **Subject:** `telemetry.<id>.hooks.remove`
+- **Request Example:**
+  ```bash
+  nats request telemetry.node-01.hooks.remove '{"id": "eth0-100g"}'
+  ```
+- **Response:**
+  ```json
+  { "status": "ok" }
+  ```
+
+### List hooks
+
+- **Subject:** `telemetry.<id>.hooks.list`
+- **Request Example:**
+  ```bash
+  nats request telemetry.node-01.hooks.list ''
+  ```
+- **Response:**
+  ```json
+  [
+    {
+      "id": "eth0-100g",
+      "interface": "eth0",
+      "trigger": "total",
+      "trigger_level": 107374182400,
+      "kind": "nats",
+      "nats_subject": "telemetry.hooks.threshold",
+      "once": true,
+      "active": false
+    }
+  ]
+  ```
