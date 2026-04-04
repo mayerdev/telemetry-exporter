@@ -18,19 +18,38 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+type InterfaceChange struct {
+	Interface  string `json:"interface"`
+	RX         uint64 `json:"rx"`
+	TX         uint64 `json:"tx"`
+	Total      uint64 `json:"total"`
+	RXDelta    uint64 `json:"rx_delta"`
+	TXDelta    uint64 `json:"tx_delta"`
+	TotalDelta uint64 `json:"total_delta"`
+}
+
+type StatsChangeEvent struct {
+	ExporterID string            `json:"exporter_id"`
+	Timestamp  int64             `json:"ts"`
+	Changes    []InterfaceChange `json:"changes"`
+}
+
 type Exporter struct {
-	config config.Config
-	nc     *nats.Conn
-	js     nats.JetStreamContext
-	hooks  *hooks.Manager
-	mu     sync.RWMutex
-	stats  stats.GlobalStats
+	config      config.Config
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	hooks       *hooks.Manager
+	mu          sync.RWMutex
+	stats       stats.GlobalStats
+	prevStats   map[string]stats.InterfaceStats
+	lastEventAt time.Time
 }
 
 func NewExporter(cfg config.Config) *Exporter {
 	return &Exporter{
-		config: cfg,
-		stats:  stats.NewGlobalStats(),
+		config:    cfg,
+		stats:     stats.NewGlobalStats(),
+		prevStats: make(map[string]stats.InterfaceStats),
 	}
 }
 
@@ -135,6 +154,8 @@ func (e *Exporter) Run(ctx context.Context) error {
 			if err := e.saveStats(); err != nil {
 				log.Error().Err(err).Msg("Failed to save stats")
 			}
+
+			e.publishStatsEvents()
 
 			e.mu.RLock()
 			ifaces := e.stats.Interfaces
@@ -258,6 +279,68 @@ func (e *Exporter) handleHookList(m *nats.Msg) {
 	list := e.hooks.List()
 	data, _ := json.Marshal(list)
 	m.Respond(data)
+}
+
+func (e *Exporter) publishStatsEvents() {
+	if !e.config.Events.Enabled || e.js == nil {
+		return
+	}
+
+	if e.config.Events.IntervalMS > 0 {
+		interval := time.Duration(e.config.Events.IntervalMS) * time.Millisecond
+		if time.Since(e.lastEventAt) < interval {
+			return
+		}
+	}
+
+	e.mu.RLock()
+	current := e.stats.Interfaces
+	e.mu.RUnlock()
+
+	threshold := e.config.Events.Threshold
+	var changes []InterfaceChange
+
+	for iface, cur := range current {
+		prev := e.prevStats[iface]
+		rxDelta := cur.RX - prev.RX
+		txDelta := cur.TX - prev.TX
+		totalDelta := cur.Total - prev.Total
+
+		if totalDelta > threshold {
+			changes = append(changes, InterfaceChange{
+				Interface:  iface,
+				RX:         cur.RX,
+				TX:         cur.TX,
+				Total:      cur.Total,
+				RXDelta:    rxDelta,
+				TXDelta:    txDelta,
+				TotalDelta: totalDelta,
+			})
+		}
+	}
+
+	if len(changes) == 0 {
+		return
+	}
+
+	for iface, cur := range current {
+		e.prevStats[iface] = *cur
+	}
+
+	event := StatsChangeEvent{
+		ExporterID: e.config.ExporterID,
+		Timestamp:  time.Now().Unix(),
+		Changes:    changes,
+	}
+
+	data, _ := json.Marshal(event)
+
+	if _, err := e.js.Publish(e.config.Events.Subject, data); err != nil {
+		log.Error().Err(err).Str("subject", e.config.Events.Subject).Msg("Failed to publish stats change event")
+		return
+	}
+
+	e.lastEventAt = time.Now()
 }
 
 func respondError(m *nats.Msg, msg string) {

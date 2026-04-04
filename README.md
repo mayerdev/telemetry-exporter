@@ -9,6 +9,7 @@ A telemetry exporter designed for hosting providers to monitor resource usage. C
 - State persistence between restarts.
 - NATS-based API for remote monitoring and management.
 - Traffic threshold hooks: fire a JetStream event or run a local command when traffic exceeds a limit.
+- Stats change events: periodic JetStream notifications listing interfaces whose traffic delta exceeds a configurable threshold.
 - Low overhead and easy deployment.
 
 ## Requirements
@@ -44,6 +45,11 @@ storage_file: 'stats.json'           # File to save accumulated statistics
 hooks_file: 'hooks.json'             # File to persist hooks and their state (default: hooks.json)
 collection_interval_ms: 1000         # Data collection interval in ms
 init_from_system: false              # Whether to start counting from current system values
+events:
+  enabled: false                     # Enable periodic stats change events
+  subject: 'telemetry.events.stats'  # JetStream subject to publish events to
+  threshold: 1024                    # Minimum byte delta per interface to include in an event
+  interval_ms: 60000                 # Minimum time between events in ms (0 = every collection tick)
 ```
 
 ## Usage
@@ -111,6 +117,35 @@ Resets the `rx`, `tx`, and `total` counters for the specified interface to zero.
     "status": "ok"
   }
   ```
+
+## Stats Change Events
+
+When `events.enabled` is `true`, the exporter publishes a JetStream message to `events.subject` containing interfaces whose accumulated delta since the last published event exceeds `events.threshold` bytes. `events.interval_ms` controls the minimum time between publishes — the event is skipped if not enough time has passed since the last one. If no interface crosses the threshold, nothing is published and the delta continues accumulating.
+
+The delta baseline is only reset after a successful publish, so brief idle periods will not cause the threshold to be missed.
+
+**Event payload:**
+```json
+{
+  "exporter_id": "node-01",
+  "ts": 1743800000,
+  "changes": [
+    {
+      "interface": "eth0",
+      "rx": 1073741824,
+      "tx": 268435456,
+      "total": 1342177280,
+      "rx_delta": 204800,
+      "tx_delta": 51200,
+      "total_delta": 256000
+    }
+  ]
+}
+```
+
+> **Note:** JetStream must be enabled on the NATS server and a stream must exist that covers the configured subject.
+
+---
 
 ## Hooks
 
