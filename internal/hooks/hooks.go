@@ -249,10 +249,12 @@ func (mgr *Manager) fireCommand(ctx context.Context, hook *Hook, exporterID, ifa
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", hook.Command)
 	cmd.Env = append(os.Environ(),
 		"EXPORTER_ID="+exporterID,
+		"HOOK_ID="+hook.ID,
 		"IFACE="+iface,
 		"TRIGGER="+hook.Trigger,
 		"VALUE="+strconv.FormatUint(value, 10),
 		"THRESHOLD="+strconv.FormatUint(hook.TriggerLevel, 10),
+		"TS="+strconv.FormatInt(time.Now().Unix(), 10),
 	)
 
 	var stderr bytes.Buffer

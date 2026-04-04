@@ -160,7 +160,7 @@ Hooks fire when accumulated traffic on an interface crosses a threshold. They ar
   { "id": "eth0-100g" }
   ```
 
-The command receives context via environment variables: `EXPORTER_ID`, `IFACE`, `TRIGGER`, `VALUE`, `THRESHOLD`.
+The command receives context via environment variables: `EXPORTER_ID`, `HOOK_ID`, `IFACE`, `TRIGGER`, `VALUE`, `THRESHOLD`, `TS`.
 
 For `kind: nats`, the published JetStream message will look like this:
 ```json
